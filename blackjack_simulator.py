@@ -354,6 +354,84 @@ class ReverseMartingale(BettingStrategy):
         return self.base_bet
 
 
+class Paroli(BettingStrategy):
+    """
+    Paroli: a positive-progression "let it ride" system with a cycle cap.
+
+    The bet is `base_bet * multiplier^streak`, where `streak` is the
+    number of consecutive net wins. The streak grows on each net win,
+    resets to 0 on a net loss, and is unchanged on a push/break-even
+    round. When the streak reaches `max_consecutive_wins`, the cycle is
+    considered WON: the streak resets to 0 and the next bet drops back
+    to `base_bet`. This is the key difference from ReverseMartingale,
+    which keeps doubling until a loss.
+
+    Net payout > 0  -> streak += 1
+    Net payout < 0  -> streak = 0
+    Net payout == 0 -> streak unchanged
+
+    Bet sizing: with multiplier=2.0 and max_consecutive_wins=3, the
+    classic Paroli sequence is base -> 2*base -> 4*base -> cycle win ->
+    base -> ...
+    """
+    def __init__(
+        self,
+        base_bet: float,
+        max_bet: float = 10_000.0,
+        multiplier: float = 2.0,
+        max_consecutive_wins: int = 3,
+    ):
+        super().__init__(base_bet, max_bet)
+        if multiplier <= 0:
+            raise ValueError(f"Paroli multiplier must be > 0, got {multiplier!r}")
+        if max_consecutive_wins < 1:
+            raise ValueError(
+                f"Paroli max_consecutive_wins must be >= 1, got {max_consecutive_wins!r}"
+            )
+        self.multiplier: float = multiplier
+        self.max_consecutive_wins: int = max_consecutive_wins
+        self._streak: int = 0
+        self.max_streak_reached: int = 0
+        self.cycle_wins: int = 0        # cycles that hit the cap and reset
+        self.loss_resets: int = 0       # times a loss reset a non-empty streak
+
+    def next_bet(self, last_result=None, last_bet=0.0, last_payout=0.0) -> float:
+        # 1) Update streak from the round we just played
+        if last_payout > 0:
+            self._streak += 1
+        elif last_payout < 0:
+            if self._streak > 0:
+                self.loss_resets += 1
+            self._streak = 0
+        # else: push / break-even -> no change
+
+        # 2) Did we just complete a winning cycle?
+        if self._streak >= self.max_consecutive_wins:
+            self.cycle_wins += 1
+            self._streak = 0  # next bet returns to base
+
+        # 3) Track max streak
+        if self._streak > self.max_streak_reached:
+            self.max_streak_reached = self._streak
+
+        # 4) Bet = base * multiplier^streak
+        if self._streak == 0:
+            return self.base_bet
+        return min(self.base_bet * (self.multiplier ** self._streak), self.max_bet)
+
+    def reset(self) -> None:
+        self._streak = 0
+        # Don't reset session aggregates
+
+    def get_session_stats(self) -> dict:
+        return {
+            'current_streak': self._streak,
+            'max_streak_reached': self.max_streak_reached,
+            'cycle_wins': self.cycle_wins,
+            'loss_resets': self.loss_resets,
+        }
+
+
 class DAlembert(BettingStrategy):
     """Add one unit on a loss, subtract one unit on a win (floor at base)."""
     def __init__(self, base_bet: float, max_bet: float = 10_000.0):
@@ -714,6 +792,7 @@ BETTING_STRATEGIES = {
     'fibonacci': Fibonacci,
     'labouchere': Labouchere,
     'alin_level': AlinLevelStrategy,
+    'paroli': Paroli,
     'hilo': HiLoCount,
 }
 
@@ -743,6 +822,7 @@ class Config:
     alin_loss_thresholds: str = '-5,-5'     # score floor (<=, must be negative) per level
     alin_win_behavior: str = 'step_back'    # 'step_back' (default) | 'reset'
     martingale_multiplier: float = 2.0      # bet growth factor on a loss (1.0 = no growth)
+    paroli_max_consecutive_wins: int = 3    # streak cap that triggers a Paroli cycle win
     hilo_ramp: str = '0:1,1:1,2:2,3:4,4:8,5:12,6:16'  # TC:units comma list
     seed: Optional[int] = None
     verbose: bool = False
@@ -1060,8 +1140,10 @@ def run_simulation(config: Config) -> SimulationResult:
     elif config.betting_strategy == 'alin_level':
         bet_kwargs['levels'] = _parse_alin_levels(config)
         bet_kwargs['win_behavior'] = config.alin_win_behavior
-    if config.betting_strategy in ('martingale', 'reverse_martingale'):
+    if config.betting_strategy in ('martingale', 'reverse_martingale', 'paroli'):
         bet_kwargs['multiplier'] = config.martingale_multiplier
+    if config.betting_strategy == 'paroli':
+        bet_kwargs['max_consecutive_wins'] = config.paroli_max_consecutive_wins
     elif config.betting_strategy == 'hilo':
         bet_kwargs['deck'] = deck
         bet_kwargs['ramp'] = _parse_hilo_ramp(config)
@@ -1196,7 +1278,7 @@ _VALUED_FLAGS = {
     '--double-after-split', '--blackjack-payout', '--num-games',
     '--base-bet', '--max-bet', '--strategy', '--labouchere-sequence',
     '--alin-bets', '--alin-win-thresholds', '--alin-loss-thresholds', '--alin-win-behavior',
-    '--martingale-multiplier',
+    '--martingale-multiplier', '--paroli-max-consecutive-wins',
     '--hilo-ramp', '--seed', '--print-every', '--save-json',
 }
 
@@ -1262,7 +1344,13 @@ def parse_args(argv: Optional[List[str]] = None) -> Config:
                          help="Comma-separated unit sequence for Labouchere")
     betting.add_argument("--martingale-multiplier", type=float, default=2.0,
                          help="Bet growth factor on a loss for Martingale "
-                              "(2.0 = classic double, 1.0 = no growth)")
+                              "(2.0 = classic double, 1.0 = no growth); "
+                              "also used as the on-win growth factor for "
+                              "reverse_martingale and paroli")
+    betting.add_argument("--paroli-max-consecutive-wins", type=int, default=3,
+                         help="Consecutive wins that complete a Paroli cycle "
+                              "(after which the streak resets to 0 and the "
+                              "next bet returns to base)")
 
     alin = p.add_argument_group("Alin Level strategy (only used with --strategy alin_level)")
     alin.add_argument("--alin-bets", default='1,6',
@@ -1306,6 +1394,7 @@ def parse_args(argv: Optional[List[str]] = None) -> Config:
         alin_loss_thresholds=args.alin_loss_thresholds,
         alin_win_behavior=args.alin_win_behavior,
         martingale_multiplier=args.martingale_multiplier,
+        paroli_max_consecutive_wins=args.paroli_max_consecutive_wins,
         hilo_ramp=args.hilo_ramp,
         seed=args.seed,
         verbose=args.verbose,
