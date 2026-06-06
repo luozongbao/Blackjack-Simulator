@@ -305,10 +305,27 @@ class FlatBet(BettingStrategy):
 
 
 class Martingale(BettingStrategy):
-    """Double the bet after every loss; reset to base after a win/push."""
+    """Multiply the bet by `multiplier` after every loss; reset to base on a win/push.
+
+    `multiplier` is the growth factor on a loss. Classic martingale uses
+    `multiplier = 2.0` (double on loss). Values between 1.0 and 2.0 give a
+    gentler progression; values > 2.0 grow faster and hit the bet cap
+    sooner. The result is always capped at `max_bet`.
+    """
+    def __init__(
+        self,
+        base_bet: float,
+        max_bet: float = 10_000.0,
+        multiplier: float = 2.0,
+    ):
+        super().__init__(base_bet, max_bet)
+        if multiplier <= 0:
+            raise ValueError(f"Martingale multiplier must be > 0, got {multiplier!r}")
+        self.multiplier: float = multiplier
+
     def next_bet(self, last_result=None, last_bet=0.0, last_payout=0.0) -> float:
         if last_result == 'loss' and last_bet > 0:
-            return min(last_bet * 2, self.max_bet)
+            return min(last_bet * self.multiplier, self.max_bet)
         return self.base_bet
 
 
@@ -708,6 +725,7 @@ class Config:
     alin_win_thresholds: str = '1,1'        # score target (>=) per level
     alin_loss_thresholds: str = '-5,-5'     # score floor (<=, must be negative) per level
     alin_win_behavior: str = 'step_back'    # 'step_back' (default) | 'reset'
+    martingale_multiplier: float = 2.0      # bet growth factor on a loss (1.0 = no growth)
     hilo_ramp: str = '0:1,1:1,2:2,3:4,4:8,5:12,6:16'  # TC:units comma list
     seed: Optional[int] = None
     verbose: bool = False
@@ -1025,6 +1043,8 @@ def run_simulation(config: Config) -> SimulationResult:
     elif config.betting_strategy == 'alin_level':
         bet_kwargs['levels'] = _parse_alin_levels(config)
         bet_kwargs['win_behavior'] = config.alin_win_behavior
+    elif config.betting_strategy == 'martingale':
+        bet_kwargs['multiplier'] = config.martingale_multiplier
     elif config.betting_strategy == 'hilo':
         bet_kwargs['deck'] = deck
         bet_kwargs['ramp'] = _parse_hilo_ramp(config)
@@ -1159,6 +1179,7 @@ _VALUED_FLAGS = {
     '--double-after-split', '--blackjack-payout', '--num-games',
     '--base-bet', '--max-bet', '--strategy', '--labouchere-sequence',
     '--alin-bets', '--alin-win-thresholds', '--alin-loss-thresholds', '--alin-win-behavior',
+    '--martingale-multiplier',
     '--hilo-ramp', '--seed', '--print-every', '--save-json',
 }
 
@@ -1222,6 +1243,9 @@ def parse_args(argv: Optional[List[str]] = None) -> Config:
                          help="Betting strategy")
     betting.add_argument("--labouchere-sequence", default='1,2,3,4,5',
                          help="Comma-separated unit sequence for Labouchere")
+    betting.add_argument("--martingale-multiplier", type=float, default=2.0,
+                         help="Bet growth factor on a loss for Martingale "
+                              "(2.0 = classic double, 1.0 = no growth)")
 
     alin = p.add_argument_group("Alin Level strategy (only used with --strategy alin_level)")
     alin.add_argument("--alin-bets", default='1,6',
@@ -1264,6 +1288,7 @@ def parse_args(argv: Optional[List[str]] = None) -> Config:
         alin_win_thresholds=args.alin_win_thresholds,
         alin_loss_thresholds=args.alin_loss_thresholds,
         alin_win_behavior=args.alin_win_behavior,
+        martingale_multiplier=args.martingale_multiplier,
         hilo_ramp=args.hilo_ramp,
         seed=args.seed,
         verbose=args.verbose,

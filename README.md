@@ -96,7 +96,7 @@ single-deck / multi-deck casino rules.
 | Key | Strategy | Notes |
 |-----|----------|-------|
 | `flatbet` | Flat Bet | Always `base_bet` |
-| `martingale` | Martingale | Double on loss, reset on win |
+| `martingale` | Martingale | Multiply by `--martingale-multiplier` (default 2.0) on loss, reset on win |
 | `reverse_martingale` | Reverse Martingale / Paroli | Double on win, reset on loss |
 | `dalembert` | D'Alembert | +1 unit on loss, −1 on win |
 | `unit_progression`, `plus_minus` | _aliases of D'Alembert_ | more descriptive names |
@@ -105,6 +105,33 @@ single-deck / multi-deck casino rules.
 | `labouchere` | Labouchere / Cancellation | Sequence-based, see `--labouchere-sequence` |
 | `alin_level` | Alin Level | Custom mini-game with per-level score thresholds; WIN behavior is `step_back` (default) or `reset` |
 | `hilo` | Hi-Lo Card Counting | True-count bet ramp, see `--hilo-ramp` |
+
+### Martingale multiplier
+
+Classic martingale doubles the bet on a loss. The `--martingale-multiplier`
+flag (default `2.0`) lets you change that growth factor:
+
+| Value | Behavior |
+|-------|----------|
+| `1.0` | No growth on loss — effectively flat betting |
+| `1.5` | Gentler progression; smaller bankroll swings |
+| `2.0` (default) | Classic martingale |
+| `3.0` | Aggressive; hits the bet cap sooner |
+| `5.0+` | Extreme; mostly useful for stress-testing the simulator |
+
+```bash
+# Default (classic)
+python blackjack_simulator.py --strategy martingale
+
+# Gentler progression
+python blackjack_simulator.py --strategy martingale --martingale-multiplier 1.5
+
+# Aggressive
+python blackjack_simulator.py --strategy martingale --martingale-multiplier 3.0
+```
+
+The bet is always capped at `--max-bet`. Values `<= 0` are rejected at parse
+time (the `Martingale` constructor raises `ValueError`).
 
 ### Alin Level — custom mini-game progression
 
