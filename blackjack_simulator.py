@@ -330,10 +330,27 @@ class Martingale(BettingStrategy):
 
 
 class ReverseMartingale(BettingStrategy):
-    """Double the bet after every win; reset to base after a loss/push."""
+    """Multiply the bet by `multiplier` after every win; reset to base on a loss/push.
+
+    Symmetric to Martingale: the same `multiplier` parameter scales bets
+    on a win instead of a loss. Default 2.0 (Paroli / classic "double on
+    win"). Values < 1.0 give a "take some off the table" feel; values > 1
+    let winnings compound; capped at `max_bet`.
+    """
+    def __init__(
+        self,
+        base_bet: float,
+        max_bet: float = 10_000.0,
+        multiplier: float = 2.0,
+    ):
+        super().__init__(base_bet, max_bet)
+        if multiplier <= 0:
+            raise ValueError(f"ReverseMartingale multiplier must be > 0, got {multiplier!r}")
+        self.multiplier: float = multiplier
+
     def next_bet(self, last_result=None, last_bet=0.0, last_payout=0.0) -> float:
         if last_result == 'win' and last_bet > 0:
-            return min(last_bet * 2, self.max_bet)
+            return min(last_bet * self.multiplier, self.max_bet)
         return self.base_bet
 
 
@@ -1043,7 +1060,7 @@ def run_simulation(config: Config) -> SimulationResult:
     elif config.betting_strategy == 'alin_level':
         bet_kwargs['levels'] = _parse_alin_levels(config)
         bet_kwargs['win_behavior'] = config.alin_win_behavior
-    elif config.betting_strategy == 'martingale':
+    if config.betting_strategy in ('martingale', 'reverse_martingale'):
         bet_kwargs['multiplier'] = config.martingale_multiplier
     elif config.betting_strategy == 'hilo':
         bet_kwargs['deck'] = deck
