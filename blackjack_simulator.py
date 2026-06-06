@@ -454,30 +454,50 @@ class AlinLevelStrategy(BettingStrategy):
         net payout < 0  -> score -= 1
         net payout == 0 -> score unchanged
 
-    When the score hits the win threshold, the mini-game ends in a WIN
-    and the strategy resets to Level 0 with score 0. When the score
-    hits the loss threshold the level is lost: if a higher level exists
-    the strategy advances to it (score resets to 0), otherwise it
-    resets to Level 0.
+    When the score hits the win threshold, the WIN behavior is:
+        - 'step_back' (default): step down one level (clamped at 0).
+          A WIN at Level 0 stays at Level 0; a WIN at Level 2 goes to
+          Level 1, etc. The session only fully resets when a WIN
+          happens at Level 0.
+        - 'reset': jump straight back to Level 0 regardless of the
+          current level.
+
+    `level_wins` counts only WINs that happen AT Level 0 (i.e. mini-
+    games that complete from the bottom). With 'step_back' this is the
+    only way to record a level win; with 'reset' a WIN at any level
+    also counts because the strategy snaps back to Level 0.
+
+    When the score hits the loss threshold the level is lost: if a
+    higher level exists the strategy advances to it (score resets to
+    0), otherwise it resets to Level 0.
 
     The bet placed in the current BJ round is `base_bet * level.bet_units`.
     """
+
+    WIN_BEHAVIORS = ('step_back', 'reset')
 
     def __init__(
         self,
         base_bet: float,
         max_bet: float = 10_000.0,
         levels: Optional[List[AlinLevelConfig]] = None,
+        win_behavior: str = 'step_back',
     ):
         super().__init__(base_bet, max_bet)
+        if win_behavior not in self.WIN_BEHAVIORS:
+            raise ValueError(
+                f"win_behavior must be one of {self.WIN_BEHAVIORS}, got {win_behavior!r}"
+            )
         self.levels: List[AlinLevelConfig] = list(levels or default_alin_levels())
         if not self.levels:
             self.levels = default_alin_levels()
+        self.win_behavior: str = win_behavior
         self._idx: int = 0
         self._score: int = 0
         self.max_level_reached: int = 0
-        self.level_wins: int = 0       # mini-games that ended in a WIN
+        self.level_wins: int = 0       # WINs that happened AT Level 0
         self.level_losses: int = 0     # levels that ended in a LOSS
+        self.level_step_backs: int = 0 # WINs at Level > 0 (only nonzero with step_back)
 
     def _current_level(self) -> AlinLevelConfig:
         return self.levels[self._idx]
@@ -498,8 +518,18 @@ class AlinLevelStrategy(BettingStrategy):
         # 2) Check thresholds for the current level
         cfg = self._current_level()
         if self._score >= cfg.win_threshold:
-            self.level_wins += 1
-            self._idx = 0
+            # Capture whether the WIN happened AT Level 0 before the
+            # index moves; this defines a "mini-game completed" event.
+            won_at_level_zero = (self._idx == 0)
+            if won_at_level_zero:
+                self.level_wins += 1
+            else:
+                self.level_step_backs += 1
+
+            if self.win_behavior == 'reset':
+                self._idx = 0
+            else:  # 'step_back'
+                self._idx = max(0, self._idx - 1)
             self._score = 0
         elif self._score <= cfg.loss_threshold:
             self.level_losses += 1
@@ -518,15 +548,17 @@ class AlinLevelStrategy(BettingStrategy):
     def reset(self) -> None:
         self._idx = 0
         self._score = 0
-        # Do NOT reset max_level_reached / level_wins / level_losses: those
-        # are session aggregates, not state.
+        # Do NOT reset max_level_reached / level_wins / level_losses /
+        # level_step_backs: those are session aggregates, not state.
 
     def get_session_stats(self) -> dict:
         return {
             'current_level': self._idx,           # 0-indexed
             'current_score': self._score,
             'max_level_reached': self.max_level_reached,  # 0-indexed
-            'level_wins': self.level_wins,
+            'win_behavior': self.win_behavior,
+            'level_wins': self.level_wins,         # WINs AT Level 0
+            'level_step_backs': self.level_step_backs,  # WINs at higher levels (step_back only)
             'level_losses': self.level_losses,
         }
 
@@ -675,6 +707,7 @@ class Config:
     alin_bets: str = '1,6'                  # bet in base units per level
     alin_win_thresholds: str = '1,1'        # score target (>=) per level
     alin_loss_thresholds: str = '-5,-5'     # score floor (<=, must be negative) per level
+    alin_win_behavior: str = 'step_back'    # 'step_back' (default) | 'reset'
     hilo_ramp: str = '0:1,1:1,2:2,3:4,4:8,5:12,6:16'  # TC:units comma list
     seed: Optional[int] = None
     verbose: bool = False
@@ -991,6 +1024,7 @@ def run_simulation(config: Config) -> SimulationResult:
         bet_kwargs['sequence'] = seq
     elif config.betting_strategy == 'alin_level':
         bet_kwargs['levels'] = _parse_alin_levels(config)
+        bet_kwargs['win_behavior'] = config.alin_win_behavior
     elif config.betting_strategy == 'hilo':
         bet_kwargs['deck'] = deck
         bet_kwargs['ramp'] = _parse_hilo_ramp(config)
@@ -1124,7 +1158,7 @@ _VALUED_FLAGS = {
     '--soft-17', '--num-decks', '--penetration', '--max-split-hands',
     '--double-after-split', '--blackjack-payout', '--num-games',
     '--base-bet', '--max-bet', '--strategy', '--labouchere-sequence',
-    '--alin-bets', '--alin-win-thresholds', '--alin-loss-thresholds',
+    '--alin-bets', '--alin-win-thresholds', '--alin-loss-thresholds', '--alin-win-behavior',
     '--hilo-ramp', '--seed', '--print-every', '--save-json',
 }
 
@@ -1196,6 +1230,9 @@ def parse_args(argv: Optional[List[str]] = None) -> Config:
                       help="Comma-separated score target per level (>= wins the level)")
     alin.add_argument("--alin-loss-thresholds", default='-5,-5',
                       help="Comma-separated score floor per level (<= loses the level; must be negative)")
+    alin.add_argument("--alin-win-behavior", choices=['step_back', 'reset'], default='step_back',
+                      help="What happens on a WIN: 'step_back' (default) drops one level, "
+                           "'reset' jumps straight back to Level 0")
 
     hilo = p.add_argument_group("Hi-Lo card counting (only used with --strategy hilo)")
     hilo.add_argument("--hilo-ramp", default='0:1,1:1,2:2,3:4,4:8,5:12,6:16',
@@ -1226,6 +1263,7 @@ def parse_args(argv: Optional[List[str]] = None) -> Config:
         alin_bets=args.alin_bets,
         alin_win_thresholds=args.alin_win_thresholds,
         alin_loss_thresholds=args.alin_loss_thresholds,
+        alin_win_behavior=args.alin_win_behavior,
         hilo_ramp=args.hilo_ramp,
         seed=args.seed,
         verbose=args.verbose,

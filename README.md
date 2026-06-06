@@ -103,7 +103,7 @@ single-deck / multi-deck casino rules.
 | `oscars_grind` | Oscar's Grind | Win 1 unit per cycle, grow on wins |
 | `fibonacci` | Fibonacci | Step up the sequence on loss, down 2 on win |
 | `labouchere` | Labouchere / Cancellation | Sequence-based, see `--labouchere-sequence` |
-| `alin_level` | Alin Level | Custom: mini-game with score thresholds per level |
+| `alin_level` | Alin Level | Custom mini-game with per-level score thresholds; WIN behavior is `step_back` (default) or `reset` |
 | `hilo` | Hi-Lo Card Counting | True-count bet ramp, see `--hilo-ramp` |
 
 ### Alin Level — custom mini-game progression
@@ -127,6 +127,33 @@ python blackjack_simulator.py --strategy alin_level \
 
 The default 2-level scheme is exactly: Level 0 bet 1u (need +1 to win, lose at −5 → advance
 to Level 1); Level 1 bet 6u (need +1 to win, lose at −5 → reset to Level 0).
+
+#### WIN behavior (`--alin-win-behavior`)
+
+When the score hits the **win** threshold, you can choose what happens to the
+level index. Both modes share the same `level_wins` metric, which only counts
+WINS that happen **at Level 0** (a fully completed mini-game).
+
+| Mode | What a WIN does | Example (3 levels) |
+|------|-----------------|---------------------|
+| `step_back` (default) | Drop one level (clamped at 0) | WIN at L2 → L1; WIN at L1 → L0; WIN at L0 → L0 |
+| `reset` | Jump straight back to Level 0 | WIN at L2 → L0; WIN at L1 → L0; WIN at L0 → L0 |
+
+`level_step_backs` tracks WINs that happened at Level ≥ 1 (with `step_back`,
+this is the count of times you dropped a level; with `reset`, this is the
+count of non-L0 wins that nonetheless snapped the index back to 0).
+
+```bash
+# Default: step back one level on win
+python blackjack_simulator.py --strategy alin_level
+
+# Legacy behavior: any win resets to Level 0
+python blackjack_simulator.py --strategy alin_level --alin-win-behavior reset
+```
+
+> 💡 With only 2 levels the two modes are observationally equivalent (a WIN
+> at Level 1 lands at Level 0 either way). To see the difference, use 3+
+> levels.
 
 ### Hi-Lo card counting
 
@@ -189,6 +216,18 @@ STRATEGY STATE
   max_true_count         : 27.37
   min_true_count         : -27.62
   top_bet_rounds         : 0
+```
+
+For Alin Level, `STRATEGY STATE` shows:
+
+```
+  current_level          : 0
+  current_score          : 0
+  max_level_reached      : 2
+  win_behavior           : step_back
+  level_wins             : 8525   # WINs at Level 0 (mini-game completed)
+  level_step_backs       : 4698   # WINs at higher levels
+  level_losses           : 6060
 ```
 
 ## 🧠 Basic strategy
