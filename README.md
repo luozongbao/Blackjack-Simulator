@@ -96,9 +96,9 @@ single-deck / multi-deck casino rules.
 | Key | Strategy | Notes |
 |-----|----------|-------|
 | `flatbet` | Flat Bet | Always `base_bet` |
-| `martingale` | Martingale | Multiply by `--martingale-multiplier` (default 2.0) on loss, reset on win |
-| `reverse_martingale` | Reverse Martingale / Paroli | Multiply by `--martingale-multiplier` (default 2.0) on win, reset on loss |
-| `paroli` | Paroli (cycle-capped) | Like reverse martingale, but reset after N consecutive wins (see `--paroli-max-consecutive-wins`) |
+| `martingale` | Martingale | Multiply by `--martingale-multiplier` (default 2.0) on loss, reset on win; cycle cap via `--max-consecutive` |
+| `reverse_martingale` | Reverse Martingale | Multiply by `--martingale-multiplier` (default 2.0) on win, reset on loss; cycle cap via `--max-consecutive` |
+| `paroli` | Paroli (alias of `reverse_martingale`) | Same as `reverse_martingale`; the textbook Paroli system is `--strategy paroli --max-consecutive 3` |
 | `dalembert` | D'Alembert | +1 unit on loss, −1 on win |
 | `unit_progression`, `plus_minus` | _aliases of D'Alembert_ | more descriptive names |
 | `oscars_grind` | Oscar's Grind | Win 1 unit per cycle, grow on wins |
@@ -137,52 +137,77 @@ python blackjack_simulator.py --strategy martingale          --martingale-multip
 The bet is always capped at `--max-bet`. Values `<= 0` are rejected by the
 strategy constructor with `ValueError`.
 
-### Paroli (cycle-capped positive progression)
+### Cycle cap: `--max-consecutive`
 
-`paroli` is a "let it ride" system: it doubles the bet on each win like
-`reverse_martingale`, but **resets the streak to 0 after N consecutive
-wins**, so you lock in profits instead of giving them all back on a single
-loss.
+Martingale and reverse martingale both have an optional **cycle cap** that
+resets the streak to 0 after a fixed number of consecutive outcomes. The
+flag is generic; the streak direction depends on the strategy:
 
-The bet sequence with the default settings
-(`--martingale-multiplier 2.0 --paroli-max-consecutive-wins 3`) and a
-base bet of 10 is:
+| Strategy | Streak counts | Cycle cap means... |
+|----------|---------------|---------------------|
+| `martingale` | consecutive **losses** | "After N losses, give up and start over" |
+| `reverse_martingale` | consecutive **wins** | "Lock in profits every N wins" (the textbook Paroli system) |
+| `paroli` | _alias of `reverse_martingale`_ | same as above |
+
+Default is `0` (no cap = classic martingale / reverse martingale
+behavior). Set to a positive integer to enable the cap.
+
+The bet sequence for `reverse_martingale` with `--max-consecutive 3
+--martingale-multiplier 2.0` and a base bet of 10 is the textbook Paroli
+system:
 
 | Round | Result | Streak | Bet placed |
 |-------|--------|--------|------------|
 | 1 | _start_ | 0 | 10 |
 | 2 | win | 1 | 20 |
 | 3 | win | 2 | 40 |
-| 4 | win | 3 → **cycle win**, reset to 0 | 80 |
+| 4 | win | 3 → **cycle cap hit**, reset to 0 | 80 |
 | 5 | _start of new cycle_ | 0 | 10 |
 | 6 | loss | 0 | 10 |
 | 7 | win | 1 | 20 |
 | ... | | | |
 
-The two key parameters:
+For `martingale` with `--max-consecutive 3` the same shape but on losses:
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--martingale-multiplier` | `2.0` | Growth factor on each consecutive win (also used by martingale and reverse_martingale) |
-| `--paroli-max-consecutive-wins` | `3` | Streak length that triggers a cycle win + reset |
+| Round | Result | Streak | Bet placed |
+|-------|--------|--------|------------|
+| 1 | _start_ | 0 | 10 |
+| 2 | loss | 1 | 20 |
+| 3 | loss | 2 | 40 |
+| 4 | loss | 3 → **cycle cap hit**, reset to 0 | 80 |
+| 5 | _start of new cycle_ | 0 | 10 |
+| 6 | win | 0 | 10 |
+| ... | | | |
 
 `STRATEGY STATE` reports `current_streak`, `max_streak_reached`,
-`cycle_wins` (completed cycles), and `loss_resets` (losses that wiped a
-non-zero streak).
+`cycles_completed` (times the cap was hit), and `opposite_resets`
+(outcome events that wiped a non-zero streak). With `--max-consecutive 0`
+the streak fields stay at 0.
 
 ```bash
-# Classic Paroli: 3 wins then reset
-python blackjack_simulator.py --strategy paroli
+# Classic martingale / reverse_martingale (no cap, default)
+python blackjack_simulator.py --strategy martingale
+python blackjack_simulator.py --strategy reverse_martingale
 
-# Tighter cycle (2 wins)
-python blackjack_simulator.py --strategy paroli --paroli-max-consecutive-wins 2
+# Textbook Paroli: cap at 3 wins
+python blackjack_simulator.py --strategy paroli --max-consecutive 3
 
-# Aggressive multiplier
-python blackjack_simulator.py --strategy paroli --martingale-multiplier 3.0
+# Equivalent to --strategy paroli --max-consecutive 3:
+python blackjack_simulator.py --strategy reverse_martingale --max-consecutive 3
 
-# Edge case: max_consecutive_wins=1 -> every win completes a cycle, bet stays at base
-python blackjack_simulator.py --strategy paroli --paroli-max-consecutive-wins 1
+# Martingale with a 5-loss cap (gentler "give up after 5 in a row" version)
+python blackjack_simulator.py --strategy martingale --max-consecutive 5
+
+# Combined with multiplier
+python blackjack_simulator.py --strategy martingale         --max-consecutive 4 --martingale-multiplier 1.5
+python blackjack_simulator.py --strategy reverse_martingale --max-consecutive 3 --martingale-multiplier 2.5
 ```
+
+> 💡 `--max-consecutive 1` degenerates into flat betting: every loss
+> (or win) immediately hits the cap and resets the streak to 0. Useful
+> for sanity-checking the implementation, not for actual play.
+
+
 
 > 💡 Paroli is mathematically the same as `reverse_martingale` capped at
 > a finite streak. The cap limits variance: instead of risking 32 units
